@@ -1,148 +1,138 @@
-
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
-
+﻿
+#include <iostream>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h> 
 #include <math.h>
 #include <windows.h>
-#include <iostream>
+#include "kernel.h"
 
-using namespace std; //������������ ������������ ���� std
+#define THREADS_PER_BLOCK 128
+#define BLOCKS_PER_GRID 4096
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+using namespace std; //использовано пространство имен std
 
-__global__ void addKernel(int *c, const int *a, const int *b)
+__global__ void addKernel(float a, float h, float *result, float *buf, int N)
 {
-	int i = threadIdx.x;
-	c[i] = a[i] + b[i];
+	//явное задание массивов в разделяемой памяти (кол-во ячеек = кол-ву нитей в блоке)
+	__shared__ float result_shared[THREADS_PER_BLOCK];
+	int i = threadIdx.x + blockDim.x*blockIdx.x;
+
+	if (i < N) {
+
+		float x = a + h * i + h / 2;
+		result_shared[threadIdx.x] = powf(logf(x), 2) / x * 7;
+		__syncthreads();
+
+		// редукция
+		int j = blockDim.x / 2; // размер блока / 2
+
+		while (j != 0) {
+			if (threadIdx.x < j)
+				result_shared[threadIdx.x] = result_shared[threadIdx.x] + result_shared[threadIdx.x + j];
+
+			__syncthreads();
+			j = j / 2;
+		}
+
+		//запись результата из разделяемой памяти обратно в глобальную
+		buf[threadIdx.x + blockDim.x*blockIdx.x] = result_shared[threadIdx.x];
+		__syncthreads();
+
+		//суммирование результатов каждого блока
+		if (threadIdx.x == 0)
+			atomicAdd(result, buf[blockDim.x*blockIdx.x]);
+	}
 }
 
-void myFunction() {
-	// ��������� ���
-	double a = 1;
-	double b = 10;
-	int	n = 256;
+int main()
+{
+	setlocale(LC_ALL, "Russian");
 
-	double h = (b - a) / n;
-	cout << "step: " << h;
+	float a = 1;
+	float b = 10;
+	int N = THREADS_PER_BLOCK * BLOCKS_PER_GRID;
 
+	cpuIntegralCalc(a, b, N);
+
+	gpuIntegralCalc(a, b, N);
+
+	return 0;
+}
+
+void cpuIntegralCalc(double a, double b, int N)
+{
+	// вычислить шаг
+	double h = (b - a) / N;
 	double result = 0;
 
-	// ��������� �������� �������
+	cout << "шаг: " << h << endl;
+
+	LARGE_INTEGER timerFrequency, timerStart, timerStop;
+	QueryPerformanceFrequency(&timerFrequency);
+	QueryPerformanceCounter(&timerStart);
+
 	for (double x = a; x < b; x = x + h)
 	{
 		double temp_x = x + (h / 2);
 		result += pow(log(temp_x), 2) / temp_x * 7;
 	}
 
-	cout << endl << "Result: " << result * h;
+	QueryPerformanceCounter(&timerStop);
+
+	//Выводим время выполнения на CPU (в мс) 
+	double cpuTime = (((double)timerStop.QuadPart - (double)timerStart.QuadPart) / (double)timerFrequency.QuadPart) * 1000;
+	cout << "Последовательный вариант: время работы в мс: " << cpuTime << endl;
+
+	cout << "Ответ: " << result * h << endl << endl;
 }
 
-int main()
+void gpuIntegralCalc(double a, double b, int N)
 {
+	// вычислить шаг
+	float h = (b - a) / N;
+	cout << "шаг: " << h << endl;
 
-	myFunction();
-	//const int arraySize = 5;
-	//const int a[arraySize] = { 1, 2, 3, 4, 5 };
-	//const int b[arraySize] = { 10, 20, 30, 40, 50 };
-	//int c[arraySize] = { 0 };
+	float *host_result;
+	float *dev_result;
+	float *dev_buf;
 
-	//// Add vectors in parallel.
-	//cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-	//if (cudaStatus != cudaSuccess) {
-	//	fprintf(stderr, "addWithCuda failed!");
-	//	return 1;
-	//}
+	host_result = (float*)malloc(sizeof(float));
 
-	//printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-	//	c[0], c[1], c[2], c[3], c[4]);
+	cudaMalloc((void**)&dev_result, sizeof(float));
+	cudaMalloc((void**)&dev_buf, N * sizeof(float));
 
-	//// cudaDeviceReset must be called before exiting in order for profiling and
-	//// tracing tools such as Nsight and Visual Profiler to show complete traces.
-	//cudaStatus = cudaDeviceReset();
-	//if (cudaStatus != cudaSuccess) {
-	//	fprintf(stderr, "cudaDeviceReset failed!");
-	//	return 1;
-	//}
 
-	return 0;
-}
+	cudaEvent_t start, stop; // Описываем переменные типа cudaEvent_t
+	float gpuTime = 0.0f;
 
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-{
-	int *dev_a = 0;
-	int *dev_b = 0;
-	int *dev_c = 0;
-	cudaError_t cudaStatus;
+	cudaEventCreate(&start); // Создаём событие начала выполнения ядра
+	cudaEventCreate(&stop); // Создаём событие конца выполнения ядра 
+	cudaEventRecord(start, 0); //Привязываем событие start к текущему месту 
 
-	// Choose which GPU to run on, change this on a multi-GPU system.
-	cudaStatus = cudaSetDevice(0);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-		goto Error;
-	}
 
-	// Allocate GPU buffers for three vectors (two input, one output)    .
-	cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
+	addKernel << <BLOCKS_PER_GRID, THREADS_PER_BLOCK >> > (a, h, dev_result, dev_buf, N);
 
-	cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
+	// копирование данных с девайса на хост
+	cudaMemcpy(host_result, dev_result, sizeof(float), cudaMemcpyDeviceToHost);
 
-	cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
 
-	// Copy input vectors from host memory to GPU buffers.
-	cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
-		goto Error;
-	}
+	cudaEventRecord(stop, 0); //Привязываем событие stop к текущему месту
 
-	cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
-		goto Error;
-	}
+	cudaEventSynchronize(stop); //Ждем реального окончания выполнения ядра, используя 
+								//возможность синхронизации по событию stop
 
-	// Launch a kernel on the GPU with one thread for each element.
-	addKernel << <1, size >> > (dev_c, dev_a, dev_b);
+	cudaEventElapsedTime(&gpuTime, start, stop); // Запрос времени между событиями start 
+												 // и stop
 
-	// Check for any errors launching the kernel
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
 
-	// cudaDeviceSynchronize waits for the kernel to finish, and returns
-	// any errors encountered during the launch.
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-		goto Error;
-	}
+	cudaEventDestroy(start); // Уничтожаем событие start 
+	cudaEventDestroy(stop);	// Уничтожаем событие stop
 
-	// Copy output vector from GPU buffer to host memory.
-	cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
-		goto Error;
-	}
+	cout << "Время работы алгоритма на gpu, в мс: " << gpuTime << endl; // Печатаем время
+	cout << "Ответ: " << *host_result * h << endl;
 
-Error:
-	cudaFree(dev_c);
-	cudaFree(dev_a);
-	cudaFree(dev_b);
-
-	return cudaStatus;
+	free(host_result);
+	cudaFree(dev_result);
+	cudaFree(dev_buf);
 }
