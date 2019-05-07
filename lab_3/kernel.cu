@@ -21,27 +21,31 @@ __global__ void addKernel(float a, float h, float *result, float *buf, int N)
 	if (i < N) {
 
 		float x = a + h * i + h / 2;
-		result_shared[threadIdx.x] = powf(logf(x), 2) / x * 7;
-		__syncthreads();
 
-		// редукция
-		int j = blockDim.x / 2; // размер блока / 2
+		if (x <= 10) {
 
-		while (j != 0) {
-			if (threadIdx.x < j)
-				result_shared[threadIdx.x] = result_shared[threadIdx.x] + result_shared[threadIdx.x + j];
-
+			result_shared[threadIdx.x] = powf(logf(x), 2) / x * 7;
 			__syncthreads();
-			j = j / 2;
+
+			// редукция
+			int j = blockDim.x / 2; // размер блока / 2
+
+			while (j != 0) {
+				if (threadIdx.x < j)
+					result_shared[threadIdx.x] = result_shared[threadIdx.x] + result_shared[threadIdx.x + j];
+
+				__syncthreads();
+				j = j / 2;
+			}
+
+			//запись результата из разделяемой памяти обратно в глобальную
+			buf[threadIdx.x + blockDim.x*blockIdx.x] = result_shared[threadIdx.x];
+			__syncthreads();
+
+			//суммирование результатов каждого блока
+			if (threadIdx.x == 0)
+				atomicAdd(result, buf[blockDim.x*blockIdx.x]);
 		}
-
-		//запись результата из разделяемой памяти обратно в глобальную
-		buf[threadIdx.x + blockDim.x*blockIdx.x] = result_shared[threadIdx.x];
-		__syncthreads();
-
-		//суммирование результатов каждого блока
-		if (threadIdx.x == 0)
-			atomicAdd(result, buf[blockDim.x*blockIdx.x]);
 	}
 }
 
@@ -53,20 +57,19 @@ int main()
 	float b = 10;
 	int N = THREADS_PER_BLOCK * BLOCKS_PER_GRID;
 
-	cpuIntegralCalc(a, b, N);
+	// вычислить шаг
+	float h = (b - a) / N;
+	cout << "шаг: " << h << endl;
 
-	gpuIntegralCalc(a, b, N);
+	cpuIntegralCalc(a, b, h, N);
+	gpuIntegralCalc(a, b, h, N);
 
 	return 0;
 }
 
-void cpuIntegralCalc(double a, double b, int N)
+void cpuIntegralCalc(double a, double b, double h, int N)
 {
-	// вычислить шаг
-	double h = (b - a) / N;
 	double result = 0;
-
-	cout << "шаг: " << h << endl;
 
 	LARGE_INTEGER timerFrequency, timerStart, timerStop;
 	QueryPerformanceFrequency(&timerFrequency);
@@ -82,17 +85,13 @@ void cpuIntegralCalc(double a, double b, int N)
 
 	//Выводим время выполнения на CPU (в мс) 
 	double cpuTime = (((double)timerStop.QuadPart - (double)timerStart.QuadPart) / (double)timerFrequency.QuadPart) * 1000;
-	cout << "Последовательный вариант: время работы в мс: " << cpuTime << endl;
 
+	cout << "Последовательный вариант: время работы в мс: " << cpuTime << endl;
 	cout << "Ответ: " << result * h << endl << endl;
 }
 
-void gpuIntegralCalc(double a, double b, int N)
+void gpuIntegralCalc(double a, double b, float h, int N)
 {
-	// вычислить шаг
-	float h = (b - a) / N;
-	cout << "шаг: " << h << endl;
-
 	float *host_result;
 	float *dev_result;
 	float *dev_buf;
