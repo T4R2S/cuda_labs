@@ -1,20 +1,21 @@
-﻿
-#include <iostream>
+﻿#include <iostream>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h> 
 #include <math.h>
 #include <windows.h>
+#include "kernel.h"
 
-//#define THREADS_PER_BLOCK 128
-//#define BLOCKS_PER_GRID 4096
+#define THREADS_PER_BLOCK 128
+#define BLOCKS_PER_GRID 4096
 
 using namespace std; //использовано пространство имен std
 
-__global__ void addKernel(float a, float h, float *result, float *buf, int N)
+
+__global__ void addKernel(float a, float h, float *result, int N)
 {
 	//явное задание массивов в разделяемой памяти (кол-во ячеек = кол-ву нитей в блоке)
-	__shared__ float result_shared[128];
+	__shared__ float result_shared[THREADS_PER_BLOCK];
 	int i = threadIdx.x + blockDim.x*blockIdx.x;
 
 	if (i < N) {
@@ -34,41 +35,21 @@ __global__ void addKernel(float a, float h, float *result, float *buf, int N)
 			j = j / 2;
 		}
 
-		//запись результата из разделяемой памяти обратно в глобальную
-		buf[threadIdx.x + blockDim.x*blockIdx.x] = result_shared[threadIdx.x];
-		__syncthreads();
-
 		//суммирование результатов каждого блока
 		if (threadIdx.x == 0)
-			atomicAdd(result, buf[blockDim.x*blockIdx.x]);
+			atomicAdd(&(result[0]), result_shared[threadIdx.x]);
 	}
 }
 
-extern "C" __declspec(dllexport) void GpuIntegralCalc(float *a, float *b, int *N, float *test, float *time)
+// extern "C" - указывает, что данная функция будет будет доступна для другого программного компонента. 
+//				имена объектов будут экспортироваться в совместимом с СИ виде.
+// __declscpec(dllexport) - данная функция будет эскпортироваться из DLL
+extern "C" __declspec(dllexport) void GpuIntegralCalc(float a, float b, long N, float *result, float *time)
 {
 	// вычислить шаг
-	float a1 = 1;
-	float b2 = 10;
-	int N1 = 4096 * 128;
+	float h = (b - a) / N;
 
-
-	float h = (b2 - a1) / N1;
-	cout << "шаг: " << h << endl;
-
-	float *host_result;
 	float *dev_result;
-	float *dev_buf;
-	float *host_buf;
-
-	host_result = (float*)malloc(sizeof(float));
-	host_buf = (float*)malloc(N1 * sizeof(float));
-
-	cudaMalloc((void**)&dev_result, sizeof(float));
-	cudaMalloc((void**)&dev_result, sizeof(float));
-	cudaMalloc((void**)&dev_result, sizeof(float));
-	cudaMalloc((void**)&dev_result, sizeof(float));
-	cudaMalloc((void**)&dev_buf, N1 * sizeof(float));
-
 
 	cudaEvent_t start, stop; // Описываем переменные типа cudaEvent_t
 	float gpuTime = 0.0f;
@@ -77,13 +58,11 @@ extern "C" __declspec(dllexport) void GpuIntegralCalc(float *a, float *b, int *N
 	cudaEventCreate(&stop); // Создаём событие конца выполнения ядра 
 	cudaEventRecord(start, 0); //Привязываем событие start к текущему месту 
 
+	cudaMalloc((void**)&dev_result, sizeof(float));
 
-	addKernel << <4096, 128 >> > (a1, h, dev_result, dev_buf, N1);
+	addKernel << <BLOCKS_PER_GRID, THREADS_PER_BLOCK >> > (a, h, dev_result, N);
 
-	// копирование данных с девайса на хост
-	cudaMemcpy(host_result, dev_result, sizeof(float), cudaMemcpyDeviceToHost);
-	cudaMemcpy(host_buf, dev_buf, N1 * sizeof(float), cudaMemcpyDeviceToHost);
-
+	cudaMemcpy(result, dev_result, sizeof(float), cudaMemcpyDeviceToHost);
 
 	cudaEventRecord(stop, 0); //Привязываем событие stop к текущему месту
 
@@ -97,18 +76,8 @@ extern "C" __declspec(dllexport) void GpuIntegralCalc(float *a, float *b, int *N
 	cudaEventDestroy(start); // Уничтожаем событие start 
 	cudaEventDestroy(stop);	// Уничтожаем событие stop
 
-	for (size_t i = 0; i < 100; i++)
-	{
-		cout << host_buf[i] << endl;
-	}
-
 	cout << endl;
 
-	cout << gpuTime << endl << *host_result << endl;
-
 	*time = gpuTime;
-	*test = *host_result;
-
-	cudaFree(dev_result);
-	cudaFree(dev_buf);
+	*result = *result * h;
 }
