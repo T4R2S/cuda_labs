@@ -5,5 +5,5 @@ extern "C" {
 }
 
 extern "C" {
-	__declspec(dllexport) float** BackProjection(float* time);
+	__declspec(dllexport) void BackProjection(float* host_discretP, int host_NN, int host_M, float host_dQ, float* host_XY, float *time);
 }

@@ -11,41 +11,44 @@ namespace ImgApp
     public class FileReader
     {
 
-        public static TomographResult Read(string path)
+        public static async Task<TomographResult> Read(string path)
         {
-            var fileLines = File.ReadLines(path);
-
-            if (fileLines.Count() == 0)
-                throw new Exception("пустой файл");
-
-            if (fileLines.First() != "data")
-                throw new Exception("неверный формат данных");
-
-            var result = new TomographResult
+            return await Task.Run(() =>
             {
-                SampleCount = int.Parse(fileLines.ElementAt(1)),
-                ProjectionCount = int.Parse(fileLines.ElementAt(2)),
-                AngleStep = float.Parse(fileLines.ElementAt(3), CultureInfo.InvariantCulture)
-            };
+                var fileLines = File.ReadLines(path);
 
-            var projectionsWithAngles = fileLines.Skip(5);
+                if (fileLines.Count() == 0)
+                    throw new Exception("пустой файл");
 
-            var angle = 0f;
+                if (fileLines.First() != "data")
+                    throw new Exception("неверный формат данных");
 
-            for (int i = 0; i < projectionsWithAngles.Count(); i += 2)
-            {
-                var projection = projectionsWithAngles
-                    .ElementAt(i)
-                    .Split(' ')
-                    .Where(x => string.IsNullOrWhiteSpace(x) == false)
-                    .Select(x => float.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+                var result = new TomographResult
+                {
+                    SampleCount = int.Parse(fileLines.ElementAt(1)),
+                    ProjectionCount = int.Parse(fileLines.ElementAt(2)),
+                    AngleStep = float.Parse(fileLines.ElementAt(3), CultureInfo.InvariantCulture)
+                };
 
-                result.Projections.Add(angle, projection);
+                var projectionsWithAngles = fileLines.Skip(5);
 
-                angle += result.AngleStep;
-            }
+                var angle = 0f;
 
-            return result;
+                for (int i = 0; i < projectionsWithAngles.Count(); i += 2)
+                {
+                    var projection = projectionsWithAngles
+                        .ElementAt(i)
+                        .Split(' ')
+                        .Where(x => string.IsNullOrWhiteSpace(x) == false)
+                        .Select(x => float.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+
+                    result.Projections.Add(angle, projection);
+
+                    angle += result.AngleStep;
+                }
+
+                return result;
+            });
         }
     }
 }

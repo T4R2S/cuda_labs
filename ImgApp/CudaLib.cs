@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Runtime.InteropServices;
 
 namespace ImgApp
 {
@@ -13,6 +8,6 @@ namespace ImgApp
         public static extern void GpuGaussCalc(float[] hostIm, ref float time);
 
         [DllImport("lab_5.dll", CallingConvention = CallingConvention.Cdecl)]
-        public static extern float[,] BackProjection(TomographResult tomographResult);
+        public static extern void BackProjection(float[] host_discretP, int host_NN, int host_M, float host_dQ, float[] pixels, ref float time);
     }
 }

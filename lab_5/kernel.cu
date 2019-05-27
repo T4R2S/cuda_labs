@@ -34,35 +34,31 @@ __global__ void gaussKernel(float *Im, int n)
 	}
 }
 
-
 __global__ void backProjectionKernel(float* device_XY, float* device_discretP, int host_NN, int host_M, float host_dQ) {
 
 	int x = blockIdx.x*blockDim.x + threadIdx.x;
 	int y = blockIdx.y*blockDim.y + threadIdx.y;
 
 	int shift = x + y * blockDim.x*gridDim.x;
-	float Q = host_dQ; // Начальный угол равен угловому шагу
+	float Q = 0.0f;
 
 	if (shift < host_NN*host_NN) {// Чтобы не выйти за диапазон массива
 
-		for (int i = 0; i < (host_M - 1); i++) {// Цикл по “M” проекциям
+		for (int i = 0; i < host_M; i++) {// Цикл по “M” проекциям
 
 			float v = (x - host_NN / 2.f)*cosf(3.14f / 180.f*Q) + (y - host_NN / 2.f)*sinf(3.14f / 180.f*Q);
 			int r = (int)(v + host_NN / 2.f); // Приводим к целому типу
 
-			if ((r < (host_NN - 1)) && (r > -1.f)) {// Чтобы не выйти за диапазон своей проекции
-				device_XY[shift] = device_XY[shift] + device_discretP[r + i * host_NN];
+			// Чтобы не выйти за диапазон своей проекции
+			if ((r < (host_NN - 1)) && (r > -1.f))
+				atomicAdd(&(device_XY[shift]), device_discretP[r + i * host_NN]);
+			
+			__syncthreads();
+			Q = Q + host_dQ; // Увеличиваем угол
 
-				// Возможно использование:
-				// atomicAdd(&(device_XY[shift]), device_discretP[r+i*host_NN]); }
-				__syncthreads(); // Синхронизация
-				Q = Q + host_dQ; // Увеличиваем угол
-
-			}
 		}
 	}
 }
-
 
 extern "C" __declspec(dllexport) void GpuGaussCalc(float *hostIm, float *time)
 {
@@ -102,7 +98,24 @@ extern "C" __declspec(dllexport) void GpuGaussCalc(float *hostIm, float *time)
 	cudaFree(dev_result);
 }
 
-extern "C" __declspec(dllexport) float** BackProjection(float *time) {
+/*
+Параметры функции:
+	host_discretP - массив с отсчетами проекций
+	host_NN - кол-во отсчетов в проекции
+	host_M - кол-во проекций
+	host_dQ - угловой шаг
+
+Возвращаемые переменные:
+	host_XY - результат методы обрабратного проецирования
+	time - время исполнения алгоритма
+*/
+extern "C" __declspec(dllexport) void BackProjection(float* host_discretP, int host_NN, int host_M, float host_dQ, float* host_XY, float *time) {
+
+	float *dev_XY;
+	float *device_discretP;
+
+	cudaMalloc((void**)&dev_XY, host_NN * host_NN * sizeof(float));
+	cudaMalloc((void**)&device_discretP, host_M * host_NN * sizeof(float));
 
 	cudaEvent_t start, stop; // Описываем переменные типа cudaEvent_t
 	float gpuTime = 0.0f;
@@ -114,7 +127,11 @@ extern "C" __declspec(dllexport) float** BackProjection(float *time) {
 	dim3 blocks(16, 16);
 	dim3 threads(32, 32);
 
-	backProjectionKernel << <blocks, threads >> > (dev_result, n);
+	cudaMemcpy(device_discretP, host_discretP, host_M * host_NN * sizeof(float), cudaMemcpyHostToDevice);
+
+	backProjectionKernel << <blocks, threads >> > (dev_XY, device_discretP, host_NN, host_M, host_dQ);
+
+	cudaMemcpy(host_XY, dev_XY, host_NN * host_NN * sizeof(float), cudaMemcpyDeviceToHost);
 
 	cudaEventRecord(stop, 0); //Привязываем событие stop к текущему месту
 
@@ -126,8 +143,6 @@ extern "C" __declspec(dllexport) float** BackProjection(float *time) {
 
 	*time = gpuTime;
 
-	float **test = 0;
-
-	return test;
-
+	cudaFree(dev_XY);
+	cudaFree(device_discretP);
 }
